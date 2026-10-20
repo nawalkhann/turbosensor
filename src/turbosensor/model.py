@@ -18,6 +18,7 @@ from sklearn.preprocessing import StandardScaler
 from . import __version__
 from .data import last_cycles
 from .features import RollingFeatures, feature_columns
+from .maintenance import DEFAULT_HORIZONS, fit_alert_threshold
 from .preprocessing import ConditionNormalizer
 
 logger = logging.getLogger(__name__)
@@ -35,14 +36,34 @@ DEFAULT_LGBM_PARAMS: dict[str, Any] = {
 }
 
 
-def make_regressor(kind: str, params: dict[str, Any] | None = None, seed: int = 0):
+class SeedEnsemble:
+    """Average of identically configured models trained with different seeds.
+
+    Row and column subsampling make each boosted model a slightly different
+    estimate; averaging them removes that variance at no cost in bias.
+    """
+
+    def __init__(self, models: list):
+        self.models = models
+
+    def fit(self, X, y):
+        for m in self.models:
+            m.fit(X, y)
+        return self
+
+    def predict(self, X):
+        return np.mean([m.predict(X) for m in self.models], axis=0)
+
+
+def make_regressor(kind: str, params: dict[str, Any] | None = None, seed: int = 0, n_seeds: int = 1):
     params = dict(params or {})
     if kind == "ridge":
         return make_pipeline(StandardScaler(), Ridge(alpha=params.get("alpha", 1.0)))
     if kind == "lgbm":
         from lightgbm import LGBMRegressor
 
-        return LGBMRegressor(**{**DEFAULT_LGBM_PARAMS, **params, "random_state": seed})
+        members = [LGBMRegressor(**{**DEFAULT_LGBM_PARAMS, **params, "random_state": seed + i}) for i in range(n_seeds)]
+        return members[0] if n_seeds == 1 else SeedEnsemble(members)
     raise ValueError(f"Unknown model kind {kind!r}; expected 'ridge' or 'lgbm'")
 
 
@@ -69,10 +90,13 @@ class RULModel:
         self,
         kind: str = "lgbm",
         params: dict[str, Any] | None = None,
-        windows: tuple[int, ...] = (5, 15, 30),
+        windows: tuple[int, ...] = (5, 15, 30, 60),
         rul_cap: int = 125,
         interval: tuple[float, float] | None = (0.1, 0.9),
         cv_folds: int = 5,
+        n_seeds: int = 1,
+        miss_cost: float = 100.0,
+        false_alarm_cost: float = 1.0,
         seed: int = 0,
     ):
         self.kind = kind
@@ -81,6 +105,9 @@ class RULModel:
         self.rul_cap = rul_cap
         self.interval = interval
         self.cv_folds = cv_folds
+        self.n_seeds = n_seeds
+        self.miss_cost = miss_cost
+        self.false_alarm_cost = false_alarm_cost
         self.seed = seed
 
     # -- training ---------------------------------------------------------
@@ -97,9 +124,10 @@ class RULModel:
         self.feature_names_ = feature_columns(F)
         X = F[self.feature_names_]
 
-        self.regressor_ = make_regressor(self.kind, self.params, self.seed).fit(X, y)
+        self.regressor_ = make_regressor(self.kind, self.params, self.seed, self.n_seeds).fit(X, y)
         self.residual_quantiles_ = None
         self.cv_report_ = None
+        self.alert_thresholds_ = {}
         if self.cv_folds and self.cv_folds > 1:
             oof = self._out_of_fold(X, y, F["unit"].to_numpy())
             resid = y - oof
@@ -110,6 +138,9 @@ class RULModel:
             }
             if self.interval:
                 self.residual_quantiles_ = self._binned_quantiles(oof, resid)
+            self.alert_thresholds_ = {
+                h: fit_alert_threshold(y, oof, h, self.miss_cost, self.false_alarm_cost) for h in DEFAULT_HORIZONS
+            }
         logger.info("Fitted %s on %d rows, %d features", self.kind, len(X), X.shape[1])
         return self
 
@@ -117,7 +148,7 @@ class RULModel:
         """Predictions for every row from a model that never saw that row's engine."""
         oof = np.empty(len(y))
         for fit_idx, val_idx in GroupKFold(n_splits=self.cv_folds).split(X, groups=units):
-            reg = make_regressor(self.kind, self.params, self.seed).fit(X.iloc[fit_idx], y[fit_idx])
+            reg = make_regressor(self.kind, self.params, self.seed, self.n_seeds).fit(X.iloc[fit_idx], y[fit_idx])
             oof[val_idx] = reg.predict(X.iloc[val_idx])
         return np.clip(oof, 0, self.rul_cap)
 
@@ -151,8 +182,9 @@ class RULModel:
 
     def feature_importance(self, top: int = 20) -> pd.Series:
         reg = self.regressor_
-        if hasattr(reg, "feature_importances_"):
-            values = reg.booster_.feature_importance(importance_type="gain")
+        members = reg.models if isinstance(reg, SeedEnsemble) else [reg]
+        if hasattr(members[0], "booster_"):
+            values = np.mean([m.booster_.feature_importance(importance_type="gain") for m in members], axis=0)
         else:
             values = np.abs(reg[-1].coef_)
         s = pd.Series(values, index=self.feature_names_, name="importance")
@@ -172,6 +204,8 @@ class RULModel:
             "sensors": self.normalizer_.sensors_,
             "n_conditions": self.normalizer_.n_conditions_,
             "n_features": len(self.feature_names_),
+            "n_seeds": self.n_seeds,
+            "alert_thresholds": self.alert_thresholds_,
             **(metadata or {}),
         }
         path.with_suffix(".json").write_text(json.dumps(meta, indent=2, default=float))

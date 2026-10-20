@@ -26,10 +26,13 @@ class Config:
     data_dir: str = "data/raw"
     output_dir: str = "artifacts"
     rul_cap: int = 125
-    windows: tuple[int, ...] = (5, 15, 30)
+    windows: tuple[int, ...] = (5, 15, 30, 60)
     models: dict[str, dict[str, Any]] = field(default_factory=lambda: {"ridge": {}, "lgbm": {}})
     cv_folds: int = 5
     maintenance_horizon: int = 30
+    miss_cost: float = 100.0
+    false_alarm_cost: float = 1.0
+    n_seeds: int = 1
     seed: int = 0
 
     @classmethod
@@ -48,6 +51,9 @@ def _build(cfg: Config, kind: str) -> RULModel:
         windows=cfg.windows,
         rul_cap=cfg.rul_cap,
         cv_folds=cfg.cv_folds,
+        n_seeds=cfg.n_seeds,
+        miss_cost=cfg.miss_cost,
+        false_alarm_cost=cfg.false_alarm_cost,
         seed=cfg.seed,
     )
 
@@ -67,14 +73,18 @@ def run(cfg: Config) -> dict[str, Any]:
         latest = model.predict_latest(split.test)
         y_true = test_truth.loc[latest["unit"]].to_numpy()
         report = regression_report(y_true, latest["rul_pred"], latest.get("rul_lower"), latest.get("rul_upper"))
-        decision = latest["rul_lower"] if "rul_lower" in latest else latest["rul_pred"]
         # Literature protocol: truth capped like the training target, since the model
         # by design cannot tell 150 from 125 cycles left on an engine with no wear yet.
         capped = regression_report(
             np.minimum(y_true, cfg.rul_cap), latest["rul_pred"], latest.get("rul_lower"), latest.get("rul_upper")
         )
         report["capped"] = {k: v for k, v in capped.items() if k != "n"}
-        report["maintenance"] = alert_metrics(y_true, decision, cfg.maintenance_horizon)
+        h = cfg.maintenance_horizon
+        threshold = model.alert_thresholds_.get(h)
+        report["maintenance"] = alert_metrics(y_true, latest["rul_pred"], h, threshold)
+        report["maintenance"]["threshold"] = threshold
+        if "rul_lower" in latest:
+            report["maintenance_lower_bound_rule"] = alert_metrics(y_true, latest["rul_lower"], h)
         report.update(model.cv_report_ or {})
         report["train_seconds"] = round(time.perf_counter() - t0, 1)
         results["models"][kind] = report

@@ -15,14 +15,14 @@ It can run as a batch job, a CLI, or a REST service.
 All numbers are on NASA's held-out test engines, scored at each engine's last observed cycle.
 LightGBM is the production model; ridge regression on the same features is the baseline.
 
-| Subset | Conditions / faults | Test engines | RMSE (capped truth) | RMSE (raw truth) | NASA score (capped) | Missed failures @30 cycles | False alarms @30 |
+| Subset | Conditions / faults | Test engines | RMSE (capped truth) | RMSE (raw truth) | NASA score (capped) | Missed failures @30 cycles | False alarms @30 (avg. cycles early) |
 |---|---|---|---|---|---|---|---|
-| FD001 | 1 / HPC | 100 | **11.22** | 12.48 | 182 | 0 of 25 | 2 |
-| FD002 | 6 / HPC | 259 | **10.48** | 23.03 | 491 | 0 of 61 | 13 |
-| FD003 | 1 / HPC + fan | 100 | **9.48** | 11.30 | 193 | 0 of 20 | 2 |
-| FD004 | 6 / HPC + fan | 248 | **10.69** | 23.75 | 553 | 0 of 53 | 15 |
+| FD001 | 1 / HPC | 100 | **10.85** | 12.15 | 166 | 0 of 25 | 3 (6.3) |
+| FD002 | 6 / HPC | 259 | **9.95** | 22.65 | 432 | 0 of 61 | 13 (7.3) |
+| FD003 | 1 / HPC + fan | 100 | **9.10** | 10.89 | 162 | 0 of 20 | 2 (3.0) |
+| FD004 | 6 / HPC + fan | 248 | **10.75** | 23.66 | 569 | 0 of 53 | 16 (5.7) |
 
-Ridge baseline, capped RMSE: 15.66 / 14.92 / 14.60 / 16.31. Full table: [`reports/metrics_summary.csv`](reports/metrics_summary.csv).
+Ridge baseline on the same features, capped RMSE: 14.19 / 14.15 / 14.31 / 15.73. Full table: [`reports/metrics_summary.csv`](reports/metrics_summary.csv).
 
 **How to read these numbers:**
 
@@ -32,11 +32,39 @@ Ridge baseline, capped RMSE: 15.66 / 14.92 / 14.60 / 16.31. Full table: [`report
   test engines and 27% of FD004's, which is why their raw RMSE is higher.
 - **NASA score** is the asymmetric PHM08 metric. It penalises late predictions (the engine keeps flying past
   the point it should have been pulled) more steeply than early ones. Lower is better.
-- **Missed failures / false alarms** come from the maintenance rule. An engine is flagged `replace` when the lower
-  bound of its 80% RUL interval is within 30 cycles. On all four test sets, this rule caught every engine that
-  failed within 30 cycles.
-- Prediction intervals cover 77-78% of capped truths on FD002, FD003 and FD004, against an 80% target.
-  On FD001's 100 test engines, coverage is 65%.
+- **Missed failures / false alarms** come from the cost-based maintenance rule (see below). On all four test sets it
+  caught every engine that failed within 30 cycles. Its false alarms are engines pulled a few cycles early: on average
+  3-7 cycles before the 30-cycle horizon, not engines with plenty of life left.
+- Prediction intervals cover 74-78% of capped truths on FD002, FD003 and FD004, against an 80% target.
+  On FD001's 100 test engines, coverage is 67%.
+- **Nothing was tuned on the test sets.** Every choice (windows, model settings, ensemble, alert threshold) was made on
+  engine-grouped cross-validation over the training engines. The test sets were only scored at the end.
+
+### The maintenance rule minimises cost, not just error
+
+The planner asks one question per engine: will it fail within the next 30 cycles? The two mistakes don't cost the same:
+
+| Mistake | Cost used |
+|---|---|
+| Missed failure (fails inside the horizon with no alert) | 100 cycles of engine life (an unscheduled removal) |
+| False alarm (pulled while it still has life) | the cycles thrown away, 1 per cycle pulled early |
+
+At training time, the model picks the alert threshold that minimises this total cost on its out-of-fold predictions.
+It does this for every horizon from 10 to 60 cycles, and stores the thresholds with the model. For a 30-cycle
+horizon, the learned thresholds are 36.5-41 predicted cycles. The costs live in each `configs/*.yaml` (`miss_cost`,
+`false_alarm_cost`), so an operator can set them to match their own economics.
+
+### What improved, and how it was measured
+
+| Step | FD001 CV RMSE | FD004 CV RMSE |
+|---|---|---|
+| First version: windows 5/15/30 | 9.15 | 10.89 |
+| Add a 60-cycle window | 8.66 | 10.73 |
+| Stronger regularisation (`min_child_samples=100`, `reg_lambda=10`) plus a 3-seed ensemble (final) | 8.65 | 10.76 |
+
+Other settings tried, all on cross-validation: fewer or more leaves, a slower learning rate, heavier column subsampling,
+and a deeper tree configuration. None did better than this setup across all four subsets. On the test sets, capped
+RMSE moved from 11.22 / 10.48 / 9.48 / 10.69 to 10.85 / 9.95 / 9.10 / 10.75.
 
 ## Why it's built this way
 
@@ -44,10 +72,11 @@ Ridge baseline, capped RMSE: 15.66 / 14.92 / 14.60 / 16.31. Full table: [`report
 |---|---|
 | **Piecewise-linear target, capped at 125** | Wear can't be seen for most of an engine's life (see the figure below). Asking a model to tell 250 from 200 cycles left on an engine with no wear means training it on noise. |
 | **Per-regime sensor normalisation** | FD002/FD004 fly six operating regimes, which are found with k-means on the settings. Switching regimes moves the sensors far more than degradation does. |
-| **Causal features only** | Rolling mean/std (5/15/30 cycles), 30-cycle trend slope, EWMA, and drift from the engine's own early-life baseline. A test checks that adding future cycles never changes past features, so the model can run on a live engine. |
+| **Causal features only** | Rolling mean/std (5/15/30/60 cycles), 60-cycle trend slope, EWMA, and drift from the engine's own early-life baseline. A test checks that adding future cycles never changes past features, so the model can run on a live engine. |
 | **Engine-grouped cross-validation** | No engine appears in both a training fold and a validation fold. A random row split would leak each engine's trajectory into validation. |
+| **Seed ensemble** | Three LightGBM models with different seeds are averaged, which removes some of the variance that row and column subsampling add. |
 | **Split-conformal intervals** | Each prediction's interval comes from out-of-fold residuals, binned by predicted RUL. Quantile boosting fell apart on the capped target, because so many labels sit exactly at 125. |
-| **Decisions act on the lower bound** | A planner pulls an engine because of the pessimistic estimate, not the average one. Uncertainty leads to earlier, safer action. |
+| **Cost-based alert threshold** | A missed failure costs far more than pulling an engine a few cycles early. The threshold that minimises total cost is learned on out-of-fold predictions. |
 
 ![Sensor trajectories](reports/figures/sensor_trajectories.png)
 ![Regime normalisation](reports/figures/regime_normalisation.png)
@@ -60,7 +89,7 @@ pip install -e ".[dev,serve,notebook]"
 
 turbosensor download                              # NASA C-MAPSS into data/raw (~12 MB)
 turbosensor train --config configs/fd001.yaml     # CV + fit + test, artifacts in artifacts/FD001/
-make train-all                                    # all four subsets (a few minutes on a laptop CPU)
+make train-all                                    # all four subsets (about 6 minutes on a 4-core CPU)
 ```
 
 **Batch scoring of a fleet**, with one row per engine sorted by urgency:
@@ -70,9 +99,9 @@ turbosensor predict --model artifacts/FD001/lgbm.joblib --input data/raw/test_FD
 ```
 
 ```
- unit  cycle  rul_pred  rul_lower  rul_upper  decision_rul  action
-   81    213       4.3        1.5        6.9           1.5 replace
-   34    203       5.4        2.6        8.0           2.6 replace
+ unit  cycle  rul_pred  rul_lower  rul_upper  alert_threshold  action
+   34    203       6.0        3.6        8.9             38.5 replace
+   81    213       6.1        3.8        9.1             38.5 replace
    ...
 ```
 
@@ -123,8 +152,8 @@ make lint     # ruff check + format check
 make notebook # rebuild and execute the notebook (needs trained artifacts)
 ```
 
-CI runs lint and tests on Python 3.10-3.12. Then it downloads the real data, trains FD001, and fails if
-the capped test RMSE goes above 13.
+CI runs lint and tests on Python 3.10-3.12. It then downloads the real data, trains FD001, and fails if
+the capped test RMSE goes above 12. It also builds the Docker image and smoke-tests the API.
 
 ## Data
 

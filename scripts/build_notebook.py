@@ -117,7 +117,7 @@ for s in ["FD001", "FD002", "FD003", "FD004"]:
         rows.append({"subset": s, "model": kind, "RMSE": r["rmse"], "RMSE (capped)": r["capped"]["rmse"],
                      "NASA score": r["nasa_score"], "NASA (capped)": r["capped"]["nasa_score"],
                      "CV RMSE": r["cv_rmse"], "80% interval coverage (capped)": r["capped"].get("interval_coverage"),
-                     "alert recall @30": r["maintenance"]["recall"], "alert precision @30": r["maintenance"]["precision"]})
+                     "missed @30": r["maintenance"]["missed"], "false alarms @30": r["maintenance"]["false_alarms"], "cycles early per false alarm": r["maintenance"]["false_alarm_mean_cycles_early"]})
 results = pd.DataFrame(rows).set_index(["subset", "model"]).round(2)
 results""")
 
@@ -157,21 +157,29 @@ fig.savefig(FIG / "fd001_feature_importance.png", bbox_inches="tight")""")
 
 md("""## 3. From prediction to maintenance decision
 
-An airline does not act on a point estimate. The planner pulls an engine when the **lower bound** of its RUL interval falls inside the planning horizon (here 30 cycles), so uncertainty translates into earlier, safer action rather than a missed failure.""")
+The planner asks one question per engine: will it fail within the next 30 cycles? Two mistakes cost different amounts:
 
-code("""plan = maintenance_plan(latest, horizon=30, watch=60)
+* **missed failure**: an unscheduled removal, priced at 100 cycles of engine life;
+* **false alarm**: the engine is pulled while it still has life left; the cost is the cycles thrown away.
+
+The alert threshold that minimises this cost is learned from **out-of-fold predictions on the training engines** (never the test set) and stored in the model.""")
+
+code("""print("learned alert thresholds (horizon -> pull when predicted RUL <=):", {h: model.alert_thresholds_[h] for h in (20, 30, 40)})
+plan = maintenance_plan(latest, horizon=30, watch=60, thresholds=model.alert_thresholds_)
 print(plan.action.value_counts().to_string())
 plan.head(10).round(1)""")
 
 code("""truth = plan.rul_true <= 30
 alert = plan.action == "replace"
+early = plan.loc[alert & ~truth, "rul_true"] - 30
+print(f"false alarms are pulled on average {early.mean():.1f} cycles before the 30-cycle horizon (max {early.max():.0f})")
 pd.crosstab(truth.rename("fails within 30 cycles"), alert.rename("replace alert"))""")
 
 md("""## Takeaways
 
-* Regime normalisation plus causal rolling features (level, noise, trend, drift from the engine's own baseline) let a gradient-boosted model reach strong accuracy without a GPU.
+* Regime normalisation plus causal rolling features over 5-60 cycles (level, noise, trend, drift from the engine's own baseline) and a 3-seed ensemble let a gradient-boosted model reach strong accuracy without a GPU.
 * Validation is grouped by engine, so no engine is ever in both training and validation folds.
-* Quantile models give an interval per engine, and the maintenance rule acts on its lower bound.
+* Out-of-fold residuals give a calibrated interval per engine, and a cost-based alert threshold learned on training engines turns predictions into replace/watch/ok decisions.
 * The weakest region is engines with more than 125 cycles left: they are reported as healthy, which is the intended behaviour, but it is what drives raw RMSE on FD002/FD004, where over a fifth of test engines are in that range.""")
 
 nb = nbf.v4.new_notebook(cells=cells, metadata={"kernelspec": {"name": "python3", "display_name": "Python 3"}})

@@ -30,7 +30,8 @@ def _cmd_train(args):
             "nasa_capped": v["capped"]["nasa_score"],
             "coverage_capped": v["capped"].get("interval_coverage"),
             "cv_rmse": v["cv_rmse"],
-            "alert_recall": v["maintenance"]["recall"],
+            "missed": v["maintenance"]["missed"],
+            "false_alarms": v["maintenance"]["false_alarms"],
         }
         for k, v in results["models"].items()
     }
@@ -44,7 +45,7 @@ def _cmd_evaluate(args):
 def _cmd_predict(args):
     model = RULModel.load(args.model)
     history = pd.read_csv(args.input) if args.input.endswith(".csv") else read_table(args.input)
-    plan = maintenance_plan(model.predict_latest(history), horizon=args.horizon)
+    plan = maintenance_plan(model.predict_latest(history), horizon=args.horizon, thresholds=model.alert_thresholds_)
     if args.output:
         plan.to_csv(args.output, index=False)
     print(plan.round(1).to_string(index=False))

@@ -36,6 +36,7 @@ class EnginePrediction(BaseModel):
     rul_pred: float
     rul_lower: float | None = None
     rul_upper: float | None = None
+    alert_threshold: float | None = None
     action: str
 
 
@@ -66,7 +67,7 @@ def create_app(model: RULModel | str | Path) -> FastAPI:
         frame = _to_frame(req.readings)
         if frame.duplicated(["unit", "cycle"]).any():
             raise HTTPException(422, "duplicate (unit, cycle) readings")
-        plan = maintenance_plan(model.predict_latest(frame), horizon=req.horizon)
-        return plan.drop(columns=["decision_rul"]).to_dict(orient="records")
+        plan = maintenance_plan(model.predict_latest(frame), horizon=req.horizon, thresholds=model.alert_thresholds_)
+        return plan.to_dict(orient="records")
 
     return app

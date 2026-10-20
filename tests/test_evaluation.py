@@ -33,3 +33,21 @@ def test_maintenance_plan_uses_lower_bound():
     assert plan.loc[[1, 2, 3], "action"].tolist() == ["replace", "ok", "replace"]
     m = alert_metrics([10, 100, 50], [25, 70, 10], horizon=30)
     assert (m["caught"], m["missed"], m["false_alarms"]) == (1, 0, 1)
+    assert m["false_alarm_mean_cycles_early"] == 20
+
+    learned = maintenance_plan(latest, horizon=30, thresholds={30: 45.0}).set_index("unit")
+    assert learned.loc[[1, 2, 3], "action"].tolist() == ["replace", "ok", "replace"]
+    assert (learned["alert_threshold"] == 45.0).all()
+
+
+def test_fit_alert_threshold_matches_brute_force():
+    from turbosensor.maintenance import alert_cost, fit_alert_threshold
+
+    rng = np.random.default_rng(0)
+    y = rng.uniform(0, 125, 500)
+    p = y + rng.normal(0, 10, 500)
+    t = fit_alert_threshold(y, p, horizon=30, miss_cost=200)
+    grid = np.arange(0, 90.5, 0.5)
+    brute = min(alert_cost(y, p, g, 30, 200, 1) for g in grid)
+    assert alert_cost(y, p, t, 30, 200, 1) == brute
+    assert t > 30  # expensive misses push the threshold above the horizon

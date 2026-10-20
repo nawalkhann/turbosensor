@@ -3,9 +3,16 @@ subset: FD004
 data_dir: data/raw
 output_dir: artifacts
 rul_cap: 125
-windows: [5, 15, 30]
+windows: [5, 15, 30, 60]
 cv_folds: 5
 maintenance_horizon: 30
+# Alert operating point is learned on out-of-fold predictions. A missed failure
+# costs as much as 100 cycles of engine life; a false alarm costs the life it
+# throws away (1 per cycle pulled early).
+miss_cost: 100
+false_alarm_cost: 1
+# Average of 3 differently seeded boosted models.
+n_seeds: 3
 seed: 0
 models:
   ridge:
@@ -14,3 +21,5 @@ models:
     n_estimators: 600
     learning_rate: 0.03
     num_leaves: 31
+    min_child_samples: 100
+    reg_lambda: 10.0

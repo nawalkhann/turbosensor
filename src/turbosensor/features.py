@@ -32,7 +32,7 @@ class RollingFeatures(BaseEstimator, TransformerMixin):
     def __init__(
         self,
         sensors: Sequence[str] | None = None,
-        windows: Sequence[int] = (5, 15, 30),
+        windows: Sequence[int] = (5, 15, 30, 60),
         ewm_span: int = 10,
         baseline_cycles: int = 15,
     ):
