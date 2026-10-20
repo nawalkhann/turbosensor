@@ -1,0 +1,5 @@
+data/
+artifacts/
+notebooks/
+.git/
+**/__pycache__

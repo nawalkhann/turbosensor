@@ -1,0 +1,16 @@
+# Single operating condition, HPC degradation only.
+subset: FD001
+data_dir: data/raw
+output_dir: artifacts
+rul_cap: 125
+windows: [5, 15, 30]
+cv_folds: 5
+maintenance_horizon: 30
+seed: 0
+models:
+  ridge:
+    alpha: 1.0
+  lgbm:
+    n_estimators: 600
+    learning_rate: 0.03
+    num_leaves: 31

@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "turbosensor"
+version = "0.1.0"
+description = "Remaining-useful-life prediction for turbofan engines on NASA C-MAPSS"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Nawal" }]
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "scikit-learn>=1.3",
+    "lightgbm>=4.0",
+    "joblib>=1.3",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+serve = ["fastapi>=0.110", "uvicorn>=0.27", "httpx>=0.27"]
+notebook = ["matplotlib>=3.7", "jupyter>=1.0"]
+dev = ["pytest>=8", "ruff>=0.5", "matplotlib>=3.7", "fastapi>=0.110", "httpx>=0.27"]
+
+[project.scripts]
+turbosensor = "turbosensor.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["data: needs the real C-MAPSS files in data/raw"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/build_notebook.py" = ["E501"]
