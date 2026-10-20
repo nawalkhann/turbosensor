@@ -33,6 +33,7 @@ class Config:
     miss_cost: float = 100.0
     false_alarm_cost: float = 1.0
     n_seeds: int = 1
+    cnn: dict[str, Any] | None = None  # e.g. {"window": 60, "epochs": 40}; blends a CNN into lgbm
     seed: int = 0
 
     @classmethod
@@ -54,6 +55,7 @@ def _build(cfg: Config, kind: str) -> RULModel:
         n_seeds=cfg.n_seeds,
         miss_cost=cfg.miss_cost,
         false_alarm_cost=cfg.false_alarm_cost,
+        cnn=cfg.cnn if kind == "lgbm" else None,
         seed=cfg.seed,
     )
 

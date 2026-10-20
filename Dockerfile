@@ -5,7 +5,9 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src
 COPY configs ./configs
-RUN pip install --no-cache-dir ".[serve]"
+# CPU-only PyTorch keeps the image small; the CNN blend member needs it.
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir ".[serve,deep]"
 
 # Bake a trained FD001 model into the image so the container serves immediately.
 RUN turbosensor download --data-dir data/raw \

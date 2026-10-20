@@ -50,3 +50,14 @@ def test_out_of_fold_intervals(fleet):
     frame = model.predict_frame(fleet)
     assert (frame["rul_lower"] <= frame["rul_pred"]).all() and (frame["rul_pred"] <= frame["rul_upper"]).all()
     assert (frame["rul_lower"] >= 0).all()
+
+
+def test_cnn_blend(fleet):
+    pytest.importorskip("torch")
+    model = RULModel(
+        kind="lgbm", params={"n_estimators": 40}, cv_folds=3, cnn={"window": 20, "epochs": 2, "threads": 1}
+    ).fit(fleet)
+    assert 0.0 <= model.cnn_weight_ <= 1.0
+    assert {"cv_rmse_gbm", "cv_rmse_cnn", "cnn_weight"} <= set(model.cv_report_)
+    latest = model.predict_latest(make_fleet(n_units=3, seed=4, truncate=True))
+    assert len(latest) == 3 and latest["rul_pred"].between(0, model.rul_cap).all()

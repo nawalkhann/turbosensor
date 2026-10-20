@@ -134,7 +134,7 @@ ax.scatter(x, order.rul_pred, color=BLUE, s=14, zorder=3, label="predicted")
 ax.axhline(125, color=GRAY, ls="--", lw=0.8)
 ax.text(len(order) - 1, 127, "target cap (125)", ha="right", color=MUTED, fontsize=8)
 ax.set_xlabel("test engine (sorted by true RUL)"); ax.set_ylabel("cycles")
-ax.set_title("FD001 test set: LightGBM predictions vs ground truth", loc="left")
+ax.set_title("FD001 test set: LightGBM + CNN blend vs ground truth", loc="left")
 ax.legend(frameon=False, loc="upper left")
 fig.tight_layout()
 fig.savefig(FIG / "fd001_predictions.png", bbox_inches="tight")
@@ -150,7 +150,7 @@ code("""imp = model.feature_importance(15)[::-1]
 fig, ax = plt.subplots(figsize=(7, 4.2))
 ax.barh(imp.index, imp.values, color=BLUE, height=0.6)
 ax.set_xlabel("share of total gain")
-ax.set_title("Top features (FD001, LightGBM)", loc="left")
+ax.set_title("Top features (FD001, LightGBM member)", loc="left")
 ax.grid(axis="y", visible=False)
 fig.tight_layout()
 fig.savefig(FIG / "fd001_feature_importance.png", bbox_inches="tight")""")
@@ -177,7 +177,7 @@ pd.crosstab(truth.rename("fails within 30 cycles"), alert.rename("replace alert"
 
 md("""## Takeaways
 
-* Regime normalisation plus causal rolling features over 5-60 cycles (level, noise, trend, drift from the engine's own baseline) and a 3-seed ensemble let a gradient-boosted model reach strong accuracy without a GPU.
+* Regime normalisation plus causal rolling features over 5-60 cycles (level, noise, trend, drift from the engine's own baseline) a 3-seed ensemble, and a small 1D-CNN blended in at a weight learned on cross-validation let a gradient-boosted model reach strong accuracy without a GPU.
 * Validation is grouped by engine, so no engine is ever in both training and validation folds.
 * Out-of-fold residuals give a calibrated interval per engine, and a cost-based alert threshold learned on training engines turns predictions into replace/watch/ok decisions.
 * The weakest region is engines with more than 125 cycles left: they are reported as healthy, which is the intended behaviour, but it is what drives raw RMSE on FD002/FD004, where over a fifth of test engines are in that range.""")

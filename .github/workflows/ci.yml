@@ -17,7 +17,8 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      - run: pip install -e ".[dev,serve]"
+      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install -e ".[dev,serve,deep]"
       - run: ruff check src tests scripts
       - run: ruff format --check src tests scripts
       - run: pytest -q
@@ -31,7 +32,8 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: pip install -e .
+      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install -e ".[deep]"
       - run: turbosensor download --data-dir data/raw
       - run: turbosensor train --config configs/fd001.yaml
       - run: python scripts/check_metrics.py artifacts/FD001/metrics.json lgbm 12.0

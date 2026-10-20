@@ -13,6 +13,11 @@ miss_cost: 100
 false_alarm_cost: 1
 # Average of 3 differently seeded boosted models.
 n_seeds: 3
+# Blend a 1D-CNN over the last 60 cycles into LightGBM; the blend weight is
+# chosen on out-of-fold predictions (0 means the CNN is dropped). Needs [deep].
+cnn:
+  window: 60
+  epochs: 40
 seed: 0
 models:
   ridge:

@@ -97,6 +97,7 @@ class RULModel:
         n_seeds: int = 1,
         miss_cost: float = 100.0,
         false_alarm_cost: float = 1.0,
+        cnn: dict[str, Any] | None = None,
         seed: int = 0,
     ):
         self.kind = kind
@@ -108,6 +109,7 @@ class RULModel:
         self.n_seeds = n_seeds
         self.miss_cost = miss_cost
         self.false_alarm_cost = false_alarm_cost
+        self.cnn = cnn
         self.seed = seed
 
     # -- training ---------------------------------------------------------
@@ -124,18 +126,45 @@ class RULModel:
         self.feature_names_ = feature_columns(F)
         X = F[self.feature_names_]
 
+        units = F["unit"].to_numpy()
+        folds = list(GroupKFold(n_splits=self.cv_folds).split(X, groups=units)) if self.cv_folds > 1 else []
+
         self.regressor_ = make_regressor(self.kind, self.params, self.seed, self.n_seeds).fit(X, y)
         self.residual_quantiles_ = None
         self.cv_report_ = None
         self.alert_thresholds_ = {}
-        if self.cv_folds and self.cv_folds > 1:
-            oof = self._out_of_fold(X, y, F["unit"].to_numpy())
+        self.cnn_ = None
+        self.cnn_weight_ = 0.0
+        oof = self._out_of_fold(X, y, folds) if folds else None
+
+        if self.cnn is not None:
+            from .sequence import CNNRegressor
+
+            S = self._sequences(train, F.index)
+            cnn_args = {"seed": self.seed, **self.cnn}
+            if folds:
+                oof_cnn = np.empty(len(y))
+                for fit_idx, val_idx in folds:
+                    oof_cnn[val_idx] = CNNRegressor(**cnn_args).fit(S[fit_idx], y[fit_idx]).predict(S[val_idx])
+                oof_cnn = np.clip(oof_cnn, 0, self.rul_cap)
+                self.cnn_weight_ = self._blend_weight(y, oof, oof_cnn)
+                cnn_cv = float(np.sqrt(np.mean((oof_cnn - y) ** 2)))
+                gbm_cv = float(np.sqrt(np.mean((oof - y) ** 2)))
+                oof = (1 - self.cnn_weight_) * oof + self.cnn_weight_ * oof_cnn
+            else:
+                self.cnn_weight_ = 0.5
+            if self.cnn_weight_ > 0:
+                self.cnn_ = CNNRegressor(**cnn_args).fit(S, y)
+
+        if oof is not None:
             resid = y - oof
             self.cv_report_ = {
                 "cv_rmse": float(np.sqrt(np.mean(resid**2))),
                 "cv_mae": float(np.mean(np.abs(resid))),
                 "cv_folds": self.cv_folds,
             }
+            if self.cnn is not None:
+                self.cv_report_.update(cv_rmse_gbm=gbm_cv, cv_rmse_cnn=cnn_cv, cnn_weight=self.cnn_weight_)
             if self.interval:
                 self.residual_quantiles_ = self._binned_quantiles(oof, resid)
             self.alert_thresholds_ = {
@@ -144,10 +173,25 @@ class RULModel:
         logger.info("Fitted %s on %d rows, %d features", self.kind, len(X), X.shape[1])
         return self
 
-    def _out_of_fold(self, X: pd.DataFrame, y: np.ndarray, units: np.ndarray) -> np.ndarray:
+    def _sequences(self, raw: pd.DataFrame, order: pd.Index) -> np.ndarray:
+        """CNN input windows for every row of ``raw``, in the order of ``order``."""
+        from .sequence import sequence_inputs, windows
+
+        Z = self.normalizer_.transform(raw)
+        S, index = windows(sequence_inputs(Z, self.normalizer_.sensors_), self.cnn.get("window", 60))
+        return S[index.get_indexer(order)]
+
+    @staticmethod
+    def _blend_weight(y: np.ndarray, a: np.ndarray, b: np.ndarray) -> float:
+        """Share of ``b`` in a two-model blend that minimises out-of-fold RMSE."""
+        grid = np.round(np.arange(0, 1.0001, 0.05), 2)
+        errors = [np.mean(((1 - w) * a + w * b - y) ** 2) for w in grid]
+        return float(grid[int(np.argmin(errors))])
+
+    def _out_of_fold(self, X: pd.DataFrame, y: np.ndarray, folds: list) -> np.ndarray:
         """Predictions for every row from a model that never saw that row's engine."""
         oof = np.empty(len(y))
-        for fit_idx, val_idx in GroupKFold(n_splits=self.cv_folds).split(X, groups=units):
+        for fit_idx, val_idx in folds:
             reg = make_regressor(self.kind, self.params, self.seed, self.n_seeds).fit(X.iloc[fit_idx], y[fit_idx])
             oof[val_idx] = reg.predict(X.iloc[val_idx])
         return np.clip(oof, 0, self.rul_cap)
@@ -166,7 +210,11 @@ class RULModel:
         F = self._features(raw)
         X = F[self.feature_names_]
         out = F[["unit", "cycle"]].copy()
-        out["rul_pred"] = np.clip(self.regressor_.predict(X), 0, self.rul_cap)
+        pred = np.clip(self.regressor_.predict(X), 0, self.rul_cap)
+        if self.cnn_ is not None:
+            cnn = np.clip(self.cnn_.predict(self._sequences(raw, F.index)), 0, self.rul_cap)
+            pred = (1 - self.cnn_weight_) * pred + self.cnn_weight_ * cnn
+        out["rul_pred"] = pred
         if self.residual_quantiles_ is not None:
             bins = pd.cut(out["rul_pred"], list(self.INTERVAL_BINS), right=False, labels=False).to_numpy()
             q = self.residual_quantiles_.loc[bins]
@@ -205,6 +253,8 @@ class RULModel:
             "n_conditions": self.normalizer_.n_conditions_,
             "n_features": len(self.feature_names_),
             "n_seeds": self.n_seeds,
+            "cnn": self.cnn,
+            "cnn_weight": self.cnn_weight_,
             "alert_thresholds": self.alert_thresholds_,
             **(metadata or {}),
         }

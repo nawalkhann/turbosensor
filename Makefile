@@ -1,7 +1,7 @@
 .PHONY: install data train train-all test lint notebook serve
 
 install:
-	pip install -e ".[dev,serve,notebook]"
+	pip install -e ".[dev,serve,notebook,deep]"
 
 data:
 	turbosensor download --data-dir data/raw
